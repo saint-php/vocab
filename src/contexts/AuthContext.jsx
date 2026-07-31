@@ -1,196 +1,134 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 const AuthContext = createContext()
 
 export function AuthProvider({ children }) {
-  const [authUser, setAuthUser] = useState(null)
-  const [profile, setProfile] = useState(null)
+  const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  // ----------------------------------------
-  // Fetch or create profile
-  // ----------------------------------------
-  const fetchProfile = async (user) => {
-    if (!user) {
-      setProfile(null)
-      return
-    }
-
-    try {
-      const { data, error } = await supabase
-        .from('profile')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle()
-
-      if (error) {
-        console.error('Profile Fetch Error:', error)
-        return
-      }
-
-      if (data) {
-        setProfile(data)
-        return
-      }
-
-      console.log('Profile not found. Creating...')
-
-      const username =
-        user.user_metadata?.username ||
-        user.email?.split('@')[0] ||
-        'User'
-
-      const { data: newProfile, error: insertError } = await supabase
-        .from('profile')
-        .insert([
-          {
-            id: user.id,
-            username,
-            email: user.email,
-          },
-        ])
-        .select()
-        .single()
-
-      if (insertError) {
-        console.error('Profile Creation Error:', insertError)
-        return
-      }
-
-      setProfile(newProfile)
-    } catch (err) {
-      console.error(err)
-    }
-  }
-
-  // ----------------------------------------
-  // Initialise auth
-  // ----------------------------------------
   useEffect(() => {
-    const initialise = async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession()
-
-      if (session?.user) {
-        setAuthUser(session.user)
-        await fetchProfile(session.user)
-      }
-
-      setLoading(false)
-    }
-
-    initialise()
+    initialize()
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      console.log('AUTH EVENT:', _event)
-
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
-        setAuthUser(session.user)
-        await fetchProfile(session.user)
+        fetchProfile(session.user)
       } else {
-        setAuthUser(null)
-        setProfile(null)
+        setUser(null)
+        setLoading(false)
       }
-
-      setLoading(false)
     })
 
     return () => subscription.unsubscribe()
   }, [])
 
-  // ----------------------------------------
-  // Signup
-  // ----------------------------------------
-  const signup = async (username, email, password) => {
-    try {
-      const { data, error } = await supabase.auth.signUp({
+  async function initialize() {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+
+    if (session?.user) {
+      await fetchProfile(session.user)
+    } else {
+      setUser(null)
+      setLoading(false)
+    }
+  }
+
+  async function fetchProfile(authUser) {
+    const { data, error } = await supabase
+      .from('profile')
+      .select('*')
+      .eq('id', authUser.id)
+      .maybeSingle()
+
+    if (error) {
+      console.error(error)
+    }
+
+    if (data) {
+      setUser(data)
+    } else {
+      // User exists in Auth but not in profile
+      setUser({
+        id: authUser.id,
+        email: authUser.email,
+        username: authUser.email.split('@')[0],
+      })
+    }
+
+    setLoading(false)
+  }
+
+  async function signup(username, email, password) {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+    })
+
+    if (error)
+      return {
+        success: false,
+        error: error.message,
+      }
+
+    const { error: profileError } = await supabase
+      .from('profile')
+      .insert([
+        {
+          id: data.user.id,
+          username,
+          email,
+        },
+      ])
+
+    if (profileError) {
+      console.error(profileError)
+
+      return {
+        success: false,
+        error: profileError.message,
+      }
+    }
+
+    return {
+      success: true,
+    }
+  }
+
+  async function login(email, password) {
+    const { data, error } =
+      await supabase.auth.signInWithPassword({
         email,
         password,
-        options: {
-          data: {
-            username,
-          },
-        },
       })
 
-      if (error) {
-        return {
-          success: false,
-          error: error.message,
-        }
-      }
-
-      return {
-        success: true,
-      }
-    } catch (err) {
-      console.error(err)
-
+    if (error) {
       return {
         success: false,
-        error: err.message,
+        error: error.message,
       }
+    }
+
+    await fetchProfile(data.user)
+
+    return {
+      success: true,
     }
   }
 
-  // ----------------------------------------
-  // Login
-  // ----------------------------------------
-  const login = async (email, password) => {
-    try {
-      const { data, error } =
-        await supabase.auth.signInWithPassword({
-          email,
-          password,
-        })
-
-      console.log('LOGIN DATA:', data)
-      console.log('LOGIN ERROR:', error)
-
-      if (error) {
-        return {
-          success: false,
-          error: error.message,
-        }
-      }
-
-      if (data.user) {
-        setAuthUser(data.user)
-        await fetchProfile(data.user)
-      }
-
-      return {
-        success: true,
-      }
-    } catch (err) {
-      console.error(err)
-
-      return {
-        success: false,
-        error: err.message,
-      }
-    }
-  }
-
-  // ----------------------------------------
-  // Logout
-  // ----------------------------------------
-  const logout = async () => {
+  async function logout() {
     await supabase.auth.signOut()
-
-    setAuthUser(null)
-    setProfile(null)
+    setUser(null)
   }
 
-  const isAuthenticated = !!authUser
+  const isAuthenticated = !!user
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-purple-600">
+      <div className="min-h-screen bg-purple-600 flex items-center justify-center">
         <p className="text-white text-xl">Loading...</p>
       </div>
     )
@@ -199,10 +137,9 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider
       value={{
-        user: profile,
-        authUser,
-        signup,
+        user,
         login,
+        signup,
         logout,
         isAuthenticated,
       }}
